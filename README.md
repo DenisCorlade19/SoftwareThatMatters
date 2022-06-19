@@ -1,7 +1,7 @@
 # SoftwareThatMatters
 
 ## Instructions
-This document will help one reproduce the results mentioned in Analyzing the Criticality of NPM Packages Through a Time-Dependent Dependency Graph
+This document will help one reproduce the results mentioned in Analyzing the Criticality of Maven Packages Through a Time-Dependent Dependency Graph
 
 To set up go dependencies, run the following in the root directory (optional, since go should download deps automatically) :
 ```
