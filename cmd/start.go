@@ -3,11 +3,16 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"github.com/AlecAivazis/survey/v2"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/AlecAivazis/survey/v2"
 
 	g "github.com/AJMBrands/SoftwareThatMatters/graph"
 	"github.com/spf13/cobra"
@@ -61,13 +66,19 @@ func start() {
 	}
 	err = survey.AskOne(usingMavenPrompt, &isUsingMaven)
 
-	fmt.Println("Creating the graph. This make take a while!")
+	fmt.Println("Creating the graph. This may take a while!")
 	if err != nil {
 		panic(err)
 	}
 
+	go func() {
+		fmt.Println("Opened pprof server")
+		fmt.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+
 	//graph, packagesList, stringIDToNodeInfo, idToNodeInfo, nameToVersions := g.CreateGraph(path, isUsingMaven)
-	graph, _, stringIDToNodeInfo, idToNodeInfo, _ := g.CreateGraph(path, isUsingMaven)
+	graph, hashMap, idToNodeInfo, _ := g.CreateGraph(path, isUsingMaven)
+
 	// TODO: remove this when we use the actual variables. It is here to get rid of the unused variables warning
 	//_, _, _, _, _ = g.CreateGraph(path, isUsingMaven)
 
@@ -81,7 +92,10 @@ func start() {
 				"Find all packages between two timestamps",
 				"Find all the possible dependencies of a package",
 				"Find all the possible dependencies of a package between two timestamps",
+				"Find the latest dependencies of a package between two timestamps",
 				"Find the most used package",
+				"Find the xth most used unique packages (pagerank)",
+				"Find the xth most used packages (betweenness)",
 				"Quit",
 			},
 		}
@@ -100,21 +114,75 @@ func start() {
 			}
 		case 1:
 			fmt.Println("This should find all the possible dependencies of a package")
-			name := generateAndRunPackageNamePrompt("Please input the package name", stringIDToNodeInfo)
-			nodes := g.GetTransitiveDependenciesNode(graph, idToNodeInfo, stringIDToNodeInfo, name)
+			name := generateAndRunPackageNamePrompt("Please input the package name", idToNodeInfo)
+			nodes := g.GetTransitiveDependenciesNode(graph, idToNodeInfo, hashMap, name)
 			for _, node := range *nodes {
 				fmt.Println(node)
 			}
 
 		case 2:
 			fmt.Println("This should find all the possible dependencies of a package between two timestamps")
-			nodes := findAllDependenciesOfAPackageBetweenTwoTimestamps(graph, idToNodeInfo, stringIDToNodeInfo)
+			nodes := findAllDependenciesOfAPackageBetweenTwoTimestamps(graph, hashMap, idToNodeInfo)
 			for _, node := range *nodes {
 				fmt.Println(node)
 			}
 		case 3:
-			fmt.Println("This should find the most used package")
+			fmt.Println("This should find the latest dependencies of a package between two time stamps")
+			nodes := findLatestDependenciesOfAPackageBetweenTwotimestamps(graph, hashMap, idToNodeInfo)
+
+			for _, node := range *nodes {
+				fmt.Println(node)
+			}
 		case 4:
+			fmt.Println("This should find the most used package")
+			pr := g.PageRank(graph)
+			maxRank := 0.0
+			var mostUsedId int64
+			for id, rank := range pr {
+				if rank > maxRank {
+					maxRank = rank
+					mostUsedId = id
+				}
+			}
+			fmt.Printf("The highest-ranked node (%v) has rank %f \n", idToNodeInfo[mostUsedId], maxRank)
+		case 5:
+			fmt.Println("This should find the most used packages (unique)")
+			input := generateAndRunInt("Please input the number of packages desired")
+			pr := pageRankOnFilteredGraph(graph, hashMap, idToNodeInfo)
+			keys := make([]int64, 0, len(pr))
+			for key := range pr {
+				keys = append(keys, key)
+			}
+			sort.Slice(keys, func(i, j int) bool { return pr[keys[i]] > pr[keys[j]] })
+
+			nr := 0
+			for _, key := range keys {
+				if nr < input {
+					fmt.Printf("The number (%d) node is (%v) and has rank %f \n", nr, idToNodeInfo[key], pr[key])
+					nr++
+				} else if nr >= input {
+					break
+				}
+			}
+		case 6:
+			fmt.Println("This should find the n most used packages")
+			fmt.Println("Running betweenness algorithm")
+			betweenness := g.Betweenness(graph)
+			keys := make([]int64, 0, len(betweenness))
+			for k := range betweenness {
+				keys = append(keys, k)
+			}
+
+			sort.SliceStable(keys, func(i, j int) bool {
+				return betweenness[keys[i]] > betweenness[keys[j]]
+			})
+
+			count := generateAndRunInt("Please select the number (n > 0) of highest-ranked packages you wish to see")
+			for i := 0; i < count; i++ {
+				normalized := betweenness[keys[i]] / betweenness[keys[0]]
+				fmt.Printf("The %d-th highest-ranked node (%v) has a betweenness score of %f \n", i, idToNodeInfo[keys[i]], normalized)
+			}
+		case 7:
 			fmt.Println("Stopping the program...")
 			stop = true
 		}
@@ -172,12 +240,21 @@ func findAllPackagesBetweenTwoTimestamps(idToNodeInfo map[int64]g.NodeInfo) *[]g
 
 }
 
-func findAllDependenciesOfAPackageBetweenTwoTimestamps(graph *simple.DirectedGraph, nodeMap map[int64]g.NodeInfo, stringIDToNodeInfo map[string]g.NodeInfo) *[]g.NodeInfo {
+func findAllDependenciesOfAPackageBetweenTwoTimestamps(graph *simple.DirectedGraph, hashMap map[uint64]int64, nodeMap map[int64]g.NodeInfo) *[]g.NodeInfo {
 	beginTime := generateAndRunDatePrompt("Please input the beginning date of the interval (DD-MM-YYYY)")
 	endTime := generateAndRunDatePrompt("Please input the end date of the interval (DD-MM-YYYY)")
-	nodeStringId := generateAndRunPackageNamePrompt("Please select the name and the version of the package", stringIDToNodeInfo)
+	nodeStringId := generateAndRunPackageNamePrompt("Please select the name and the version of the package", nodeMap)
 	g.FilterGraph(graph, nodeMap, beginTime, endTime)
-	return g.GetTransitiveDependenciesNode(graph, nodeMap, stringIDToNodeInfo, nodeStringId)
+	return g.GetTransitiveDependenciesNode(graph, nodeMap, hashMap, nodeStringId)
+}
+
+func findLatestDependenciesOfAPackageBetweenTwotimestamps(graph *simple.DirectedGraph, hashMap map[uint64]int64, nodeMap map[int64]g.NodeInfo) *[]g.NodeInfo {
+	beginTime := generateAndRunDatePrompt("Please input the beginning date of the interval (DD-MM-YYYY)")
+	endTime := generateAndRunDatePrompt("Please input the end date of the interval (DD-MM-YYYY)")
+	nodeStringId := generateAndRunPackageNamePrompt("Please select the name and the version of the package", nodeMap)
+	g.FilterNoTraversal(graph, nodeMap, beginTime, endTime)
+	g.LatestNoTraversal(graph, nodeMap)
+	return g.GetLatestTransitiveDependenciesNode(graph, nodeMap, hashMap, nodeStringId)
 }
 
 func generateAndRunDatePrompt(message string) time.Time {
@@ -217,14 +294,49 @@ func generateAndRunDatePrompt(message string) time.Time {
 
 }
 
-func generateAndRunPackageNamePrompt(message string, stringIDToNodeInfo map[string]g.NodeInfo) string {
-	keys := make([]string, 0, len(stringIDToNodeInfo))
-	for key := range stringIDToNodeInfo {
-		keys = append(keys, key)
+func pageRankOnFilteredGraph(graph *simple.DirectedGraph, hashMap map[uint64]int64, nodeMap map[int64]g.NodeInfo) map[int64]float64 {
+	beginTime := generateAndRunDatePrompt("Please input the beginning date of the interval (DD-MM-YYYY)")
+	endTime := generateAndRunDatePrompt("Please input the end date of the interval (DD-MM-YYYY)")
+	g.FilterNoTraversal(graph, nodeMap, beginTime, endTime)
+	g.LatestNoTraversal(graph, nodeMap)
+	return g.PageRank(graph)
+}
+
+func generateAndRunInt(message string) int {
+
+	validateInput := func(input interface{}) error {
+		str, _ := input.(string)
+		nr, err := strconv.Atoi(str)
+		if err != nil {
+
+			return errors.New("input is not an integer")
+		}
+		if nr <= 0 {
+			return errors.New("input cannot be lower or equal to 0")
+		}
+		return nil
+	}
+	intPrompt := &survey.Input{
+		Message: message,
+	}
+	var ans int
+	err := survey.AskOne(intPrompt, &ans, survey.WithValidator(validateInput))
+
+	if err != nil {
+		panic(err)
+	}
+	return ans
+}
+
+func generateAndRunPackageNamePrompt(message string, stringIDToNodeInfo map[int64]g.NodeInfo) string {
+	names := make([]string, 0, len(stringIDToNodeInfo))
+	for _, node := range stringIDToNodeInfo {
+		name := fmt.Sprintf("%s-%s", node.Name, node.Version)
+		names = append(names, name)
 	}
 	packagePrompt := &survey.Select{
 		Message: message,
-		Options: keys,
+		Options: names,
 	}
 
 	//packagePrompt := &survey.Input{
