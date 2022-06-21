@@ -14,6 +14,23 @@ go run main.go start
 ```
 This will open up a cli where various commands can be used.
 
+The project requires a JSON file formatted the following way:
+```
+{"pkgs":[{
+  "name": "react",
+  "versions": {
+    "1.00": {
+      "timestamp": "06-05-2022T10:00:01",
+      "dependencies": {
+        "name": "^1.0.2"
+      }
+    }
+  }
+},
+```
+
+To process the packages metadata in this way, more instruction can be found on this [repository](https://github.com/DenisCorlade19/maven-package-metadata)
+
 ### License
 The code's main license can be found in LICENSE.
 It also re-uses some modified gonum code, for which the license can be found in GONUM_LICENSE
